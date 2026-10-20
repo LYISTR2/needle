@@ -1,0 +1,47 @@
+[Unit]
+Description=Needle outbound-only Linux monitoring agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+User=needle-agent
+LoadCredential=agent.json:/etc/needle/agent.json
+ExecStart=/usr/local/bin/needle agent --config %d/agent.json
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+StateDirectory=needle-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @privileged @resources
+SocketBindDeny=any
+MemoryMax=64M
+TasksMax=32
+LimitNOFILE=128
+
+[Install]
+WantedBy=multi-user.target
