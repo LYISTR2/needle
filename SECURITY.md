@@ -4,7 +4,9 @@
 
 Needle observes Linux hosts. It has no exec/terminal/file-transfer/update/plugin endpoint. The agent initiates HTTPS requests and never listens. A panel response is used only as an HTTP status; it cannot configure targets or run actions. Panel metadata is rendered with DOM textContent, not injected HTML. Theme values are validated color literals, not arbitrary CSS/JS.
 
-The web dashboard is read-only. Enrollment, revocation and traffic edits require local OS administrator access. A 256-bit OS-random viewer token authorizes reads; separate 256-bit per-node tokens authorize reports for only that node. The database stores SHA-256 token digests. Comparison is constant-time for valid-format tokens. HTTPS is mandatory; agent redirects and environment proxies are disabled. Tokens are not cookies, query parameters or persistent browser storage.
+The web dashboard supports administrator username/password login, metadata editing, enrollment and deletion. Administrator passwords are Argon2id hashes in SQLite. Session tokens are 256-bit random values stored as SHA-256 digests; cookies are Secure, HttpOnly and SameSite=Strict with a path scoped to the panel and a 12-hour absolute expiry. Mutations additionally require the exact configured Origin and a per-session CSRF header. Password changes/reset revoke all sessions. Login attempts are globally spaced at least three seconds apart; reverse-proxy per-client rate limiting is still recommended. Legacy viewer tokens remain read-only; they cannot authorize administration. Per-node reporting credentials remain independent.
+
+Agent installation uses one-use 256-bit enrollment tokens with 15-minute expiry, stored as digests. Redeeming a token rotates the node report token and returns the new configuration over HTTPS; no agent credential appears in a URL. Copyable installation commands contain a short-lived secret and can remain in shell history: treat them as credentials until redeemed/expired. Release downloads check SHA256SUMS from the same GitHub release; checksums detect corruption but are not independent signatures.
 
 Reports have strict field validation, monotonic persisted sequence numbers, per-node acceptance spacing, bounded bodies and concurrency. Revocation deletes the identity and its latest report. Monotonic sequence checks stop simple replay but are not protection against an adversary who steals the node token and invents higher sequences.
 
@@ -19,6 +21,7 @@ Reports have strict field validation, monotonic persisted sequence numbers, per-
 ## Compromise impact — no false guarantees
 
 - A leaked viewer token exposes all monitored system metadata and traffic. It cannot use the supplied API to delete nodes or execute commands.
+- A leaked administrator password or session permits reading all metadata, enrolling, editing and deleting nodes, and changing the administrator password with the current password. It does not add a remote-command channel to agents.
 - A leaked node token can forge that node's telemetry and advance its sequence, disrupting authentic reports. It cannot read all nodes using the API or authenticate as another node.
 - A compromised panel process can read/change/delete its database and read the viewer digest/config, alter web responses and steal the viewer token when it is entered. It can observe incoming agent bearer tokens. Do NOT claim panel compromise only allows deleting nodes.
 - A malicious authenticated panel can withhold or reject reports. It has no intentional agent-control channel, but vulnerabilities in TLS/HTTP parsers and dependencies remain possible.
@@ -32,6 +35,8 @@ No independent security audit, penetration-test certification, fuzzing coverage 
 Avoid exposing the panel beyond necessary networks; use VPN/IP allowlists at the proxy where appropriate. Do not disable TLS verification, remove authentication, or weaken sandbox settings merely to make a deployment work.
 
 ## Credential recovery
+
+For administrator recovery run `sudo needle-admin set-admin admin` and enter a new password at the prompt. This keeps node data and revokes all sessions. Back up the database and configuration before local administrative changes.
 
 Lost dashboard token cannot be recovered from its digest. Stop the panel and back up configuration. Run `needle init` against a new temporary config with the same origin/database/socket, safely save the newly printed token, merge any existing theme settings and replace the old config atomically as root, then restart and verify both the new token and rejection of the old token. Do not overwrite the database.
 

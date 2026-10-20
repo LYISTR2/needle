@@ -5,14 +5,45 @@ Rust 写的极简 Linux 服务器探针。**只观测，不控制。**
 - CPU、内存、根分区、系统、运行时间、负载。
 - 本地指定目标的 TCP 建连延迟（不是 ICMP ping）。
 - 指定网卡的实时速率与持久化累计收发流量，可手动导入历史值。
-- 只读私有面板，明暗主题与受限配色自定义。
+- 私有监控面板与管理员登录，明暗主题与受限配色自定义。
 - 无远程命令、终端、文件管理、自动更新、告警平台、插件执行、历史图表。
 
 一个 Rust 二进制包含 panel 和 agent 子命令，前端资源内嵌，无 Node.js 运行时、CDN、外部字体或遥测。面板仅保存每个节点最后一份报告，不做时序数据库。
 
+## v0.2.0：登录、管理与一键安装
+
+默认登录方式为管理员账号密码，旧只读密钥通过「只读访问」入口使用。账号在服务器执行 `sudo needle-admin set-admin admin` 设置／恢复；密码至少 12 字节，改密会撤销全部会话。新安装器会提示设置密码。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/LYISTR2/needle/main/install.sh -o needle-install.sh
+sudo bash needle-install.sh panel --url https://probe.example.com/needle
+```
+
+管理员可以网页新增／编辑／删除节点，设置分组、备注、到期日期、累计流量配额及排序，筛选在线状态。新增或点击「安装」即可生成 15 分钟有效的一次性 agent 安装命令。命令在目标服务器执行，兑换凭据后轮换报告密钥；不支持远程执行或自动更新。配额按累计上下行之和展示，不代表月度账单。
+
+子路径部署时，在 panel.json 设置 `"path_prefix": "/needle"`，配置如下 location，原站其他路径保留：
+
+```nginx
+location = /needle { return 308 /needle/; }
+location /needle/ {
+    proxy_pass http://unix:/run/needle-panel/http.sock:/;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Connection "";
+    proxy_set_header X-Forwarded-For "";
+    proxy_read_timeout 10s;
+    client_max_body_size 16k;
+    access_log off;
+}
+```
+
+旧版配置不含 path_prefix 时按根路径处理；现有数据库会增加管理相关表，不清空旧节点或流量。已有安装升级前应备份二进制、配置和数据库；只替换二进制与管理助手，然后重启服务并设置管理员。发行包不再包含 evidence 目录。
+
+本版按维护者要求不运行测试／项目验证器；下列测试命令仅供手动使用，既有测试可能仍针对旧登录布局。
+
 ## 下载包内容
 
-`needle`：Linux x86_64 GNU release 二进制；`src/`、`web/`、`Cargo.lock`：完整源码；`deploy/`：systemd、Nginx 和本地管理助手；`docs/`：静态 HTML 和纯文本说明；`evidence/`：实测记录和截图。
+`needle`：Linux x86_64 GNU release 二进制；`src/`、`web/`、`Cargo.lock`：完整源码；`deploy/`：systemd、Nginx 和本地管理助手；`docs/`：静态 HTML 和纯文本说明；`install.sh`：安装脚本。
 
 当前构建是在 Debian 13 x86_64 上验证的 GNU 动态链接版本，需要兼容的 glibc/libgcc；**未验证 ARM、musl、Windows、macOS**。其他 Linux 请在目标系统构建。
 

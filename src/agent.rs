@@ -17,6 +17,8 @@ pub struct Config {
     #[serde(default)]
     pub path_prefix: String,
     pub node_id: String,
+    #[serde(default)]
+    pub sequence_floor: u64,
     pub token: String,
     pub state_dir: PathBuf,
     pub interfaces: Vec<String>,
@@ -67,7 +69,7 @@ pub fn valid_interface(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn valid_prefix(prefix: &str) -> Result<()> {
+pub(crate) fn valid_prefix(prefix: &str) -> Result<()> {
     ensure!(
         prefix.is_empty()
             || (prefix.starts_with('/')
@@ -419,6 +421,7 @@ pub async fn run(path: &Path, once: bool) -> Result<()> {
     let cfg = config(path)?;
     let _lock = lock_state(&cfg)?;
     let mut state = ledger(&cfg)?;
+    state.sequence = state.sequence.max(cfg.sequence_floor);
     // Initial baseline counts current-boot traffic once, but does not inflate live rate.
     account(&mut state, boot_id()?, raw_network(&cfg)?)?;
     shared::atomic_json(&cfg.state_dir.join("traffic.json"), &state)?;

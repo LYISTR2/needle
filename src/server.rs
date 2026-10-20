@@ -33,15 +33,19 @@ pub struct Config {
     pub socket: PathBuf,
     pub viewer_hash: String,
     #[serde(default)]
+    pub path_prefix: String,
+    #[serde(default)]
     pub theme: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
-struct App {
-    db: Arc<Mutex<Connection>>,
-    host: String,
-    origin: String,
-    viewer_hash: String,
+pub(crate) struct App {
+    pub(crate) db: Arc<Mutex<Connection>>,
+    pub(crate) host: String,
+    pub(crate) origin: String,
+    pub(crate) viewer_hash: String,
+    pub(crate) path_prefix: String,
+    pub(crate) login_gate: Arc<Mutex<u64>>,
     theme_css: String,
 }
 
@@ -56,6 +60,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
             report TEXT
         );",
     )?;
+    crate::admin::schema(&db)?;
     Ok(db)
 }
 
@@ -71,6 +76,7 @@ pub fn initialize(path: &Path, value: &str, database: PathBuf, socket: PathBuf) 
         database,
         socket,
         viewer_hash: shared::digest(&viewer),
+        path_prefix: String::new(),
         theme: BTreeMap::new(),
     };
     shared::create_json(path, &cfg)?;
@@ -102,13 +108,14 @@ pub fn add_node(config: &Path, id: &str, name: &str, output: &Path, interface: &
     let ac = crate::agent::Config {
         endpoint: cfg.origin,
         node_id: id.into(),
+        sequence_floor: 0,
         token: key,
         state_dir: PathBuf::from("/var/lib/needle-agent"),
         interfaces: vec![interface.into()],
         interval_seconds: 10,
         targets: vec![],
         ca_certificate: None,
-        path_prefix: String::new(),
+        path_prefix: cfg.path_prefix,
     };
     shared::create_json(output, &ac)?;
     if let Err(e) = tx.commit() {
@@ -145,6 +152,7 @@ fn theme_css(theme: &BTreeMap<String, String>) -> Result<String> {
 pub async fn serve(path: &Path) -> Result<()> {
     let cfg: Config = shared::read_json(path)?;
     let url = shared::origin(&cfg.origin)?;
+    crate::agent::valid_prefix(&cfg.path_prefix)?;
     ensure!(
         cfg.viewer_hash.len() == 64 && hex::decode(&cfg.viewer_hash).is_ok(),
         "invalid viewer hash"
@@ -178,6 +186,8 @@ pub async fn serve(path: &Path) -> Result<()> {
         host: url[url::Position::BeforeHost..url::Position::AfterPort].to_owned(),
         origin: url.origin().ascii_serialization(),
         viewer_hash: cfg.viewer_hash,
+        path_prefix: cfg.path_prefix,
+        login_gate: Arc::new(Mutex::new(0)),
         theme_css: theme_css(&cfg.theme)?,
     };
     let listener = tokio::net::UnixListener::bind(&cfg.socket)?;
@@ -187,7 +197,15 @@ pub async fn serve(path: &Path) -> Result<()> {
         .route("/app.js", get(script))
         .route("/style.css", get(style))
         .route("/theme.css", get(theme))
-        .route("/api/nodes", get(nodes))
+        .route("/api/nodes", get(nodes).post(crate::admin::create_node))
+        .route("/api/nodes/{id}", axum::routing::put(crate::admin::edit_node).delete(crate::admin::delete_node))
+        .route("/api/nodes/{id}/enroll", post(crate::admin::enroll_node))
+        .route("/api/auth/login", post(crate::admin::login))
+        .route("/api/auth/session", get(crate::admin::session))
+        .route("/api/auth/logout", post(crate::admin::logout))
+        .route("/api/auth/password", post(crate::admin::change_password))
+        .route("/api/enroll", post(crate::admin::redeem))
+        .route("/install.sh", get(installer))
         .route("/api/report/{id}", post(report))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(16 * 1024))
@@ -253,7 +271,7 @@ async fn boundary(State(app): State<App>, request: Request<Body>, next: Next) ->
     response
 }
 
-fn authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
+pub(crate) fn authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
     let Some(raw) = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -279,8 +297,11 @@ async fn script() -> impl IntoResponse {
 async fn style() -> impl IntoResponse {
     (
         [("content-type", "text/css; charset=utf-8")],
-        include_str!("../web/dashboard.css"),
+        include_str!("../web/console.css"),
     )
+}
+async fn installer() -> impl IntoResponse {
+    ([("content-type", "text/plain; charset=utf-8")], include_str!("../install.sh"))
 }
 async fn theme(State(app): State<App>) -> impl IntoResponse {
     ([("content-type", "text/css; charset=utf-8")], app.theme_css)
@@ -290,6 +311,11 @@ async fn theme(State(app): State<App>) -> impl IntoResponse {
 struct Node {
     id: String,
     name: String,
+    group_name: String,
+    note: String,
+    expires_at: String,
+    quota_gib: f64,
+    sort_order: i32,
     received_at: Option<u64>,
     online: bool,
     report: Option<Report>,
@@ -304,7 +330,7 @@ async fn nodes(
     State(app): State<App>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Snapshot>, StatusCode> {
-    if !authorized(&headers, &app.viewer_hash) {
+    if !authorized(&headers, &app.viewer_hash) && crate::admin::authorize(&app, &headers, false).is_err() {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let db = app
@@ -312,7 +338,7 @@ async fn nodes(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut stmt = db
-        .prepare("SELECT id,name,received_at,report FROM nodes ORDER BY name,id")
+        .prepare("SELECT n.id,n.name,n.received_at,n.report,COALESCE(m.group_name,''),COALESCE(m.note,''),COALESCE(m.expires_at,''),COALESCE(m.quota_gib,0),COALESCE(m.sort_order,0) FROM nodes n LEFT JOIN node_meta m ON m.node_id=n.id ORDER BY COALESCE(m.sort_order,0),n.name,n.id")
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let now = shared::now();
     let rows = stmt
@@ -322,6 +348,11 @@ async fn nodes(
             Ok(Node {
                 id: r.get(0)?,
                 name: r.get(1)?,
+                group_name: r.get(4)?,
+                note: r.get(5)?,
+                expires_at: r.get(6)?,
+                quota_gib: r.get(7)?,
+                sort_order: r.get(8)?,
                 received_at,
                 online: received_at.is_some_and(|t| now.saturating_sub(t) <= 45),
                 report: report.and_then(|r| serde_json::from_str(&r).ok()),

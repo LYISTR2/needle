@@ -30,10 +30,12 @@ for name, colors in palettes.items():
 (docs/'themes.html').write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Needle / 配色预览</title><style>'+style+'</style><h1>三种颜色，同一根针。</h1><p>把对应 JSON 写入 panel.json 的 theme 字段，再重启面板。</p><a href="index.html">返回文档</a>'+''.join(sections)+'</html>')
 
 dist=root/'dist'
-stage=dist/'needle-0.1.0-linux-x86_64'
+version = __import__('tomllib').loads((root/'Cargo.toml').read_text())['package']['version']
+arch = __import__('platform').machine()
+stage=dist/f'needle-{version}-linux-{arch}'
 if stage.exists(): shutil.rmtree(stage)
 stage.mkdir(parents=True)
-for item in ['Cargo.toml','Cargo.lock','README.md','SECURITY.md','LICENSE','src','web','deploy','docs','tests','scripts','evidence']:
+for item in ['Cargo.toml','Cargo.lock','README.md','SECURITY.md','LICENSE','THIRD_PARTY_NOTICES.md','install.sh','src','web','deploy','docs','tests','scripts']:
     source=root/item
     if not source.exists(): continue
     if source.is_dir(): shutil.copytree(source,stage/item,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
@@ -41,6 +43,7 @@ for item in ['Cargo.toml','Cargo.lock','README.md','SECURITY.md','LICENSE','src'
 shutil.copyfile(root/'target/release/needle',stage/'needle')
 os.chmod(stage/'needle',0o755)
 os.chmod(stage/'deploy/needle-admin',0o755)
+os.chmod(stage/'install.sh',0o755)
 manifest=[]
 for file in sorted(stage.rglob('*')):
     if file.is_file(): manifest.append(f'{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.relative_to(stage)}')

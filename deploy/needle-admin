@@ -21,6 +21,13 @@ run_panel() {
     "$bin" "$@" --config "/run/credentials/$unit.service/panel.json"
 }
 case ${1:-} in
+  set-admin)
+    [[ $# -le 2 ]] || { printf 'Usage: needle-admin set-admin [USERNAME]\n' >&2; exit 1; }
+    read -r -s -p 'New administrator password (12+ bytes): ' password < /dev/tty
+    printf '\n' >&2
+    printf '%s\n' "$password" | run_panel set-admin --username "${2:-admin}"
+    unset password
+    ;;
   add-node)
     [[ $# -eq 5 ]] || { printf 'Usage: needle-admin add-node ID NAME INTERFACE /absolute/output.json\n' >&2; exit 1; }
     [[ $2 =~ ^[a-zA-Z0-9_-]{1,64}$ && $5 == /* && ! -e $5 ]] || { printf 'Invalid id or output must be a new absolute path.\n' >&2; exit 1; }
@@ -47,7 +54,7 @@ case ${1:-} in
       "$bin" set-traffic --config "/run/credentials/$unit.service/agent.json" --rx "$2" --tx "$3"
     ;;
   *)
-    printf 'Commands:\n  needle-admin add-node ID NAME INTERFACE /absolute/output.json\n  needle-admin remove-node ID\n  needle-admin set-traffic RX_BYTES TX_BYTES\n' >&2
+    printf 'Commands:\n  needle-admin set-admin [USERNAME]\n  needle-admin add-node ID NAME INTERFACE /absolute/output.json\n  needle-admin remove-node ID\n  needle-admin set-traffic RX_BYTES TX_BYTES\n' >&2
     exit 1
     ;;
 esac

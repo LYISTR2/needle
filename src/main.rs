@@ -1,5 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod admin;
 mod agent;
 mod server;
 mod shared;
@@ -17,6 +18,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set/reset the administrator password from stdin (never a process argument).
+    SetAdmin {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long, default_value = "admin")]
+        username: String,
+    },
     /// Create panel configuration and a read-only dashboard credential.
     Init {
         #[arg(long)]
@@ -79,6 +87,7 @@ async fn main() -> Result<()> {
         libc::umask(0o077);
     }
     match Cli::parse().command {
+        Command::SetAdmin { config, username } => admin::set_admin(&config, &username)?,
         Command::Init {
             config,
             origin,
@@ -100,10 +109,14 @@ async fn main() -> Result<()> {
         Command::RemoveNode { config, id } => {
             shared::valid_id(&id)?;
             let cfg: server::Config = shared::read_json(&config)?;
-            let db = server::open_db(&cfg.database)?;
-            if db.execute("DELETE FROM nodes WHERE id = ?1", [&id])? == 0 {
+            let mut db = server::open_db(&cfg.database)?;
+            let tx = db.transaction()?;
+            if tx.execute("DELETE FROM nodes WHERE id = ?1", [&id])? == 0 {
                 bail!("node not found");
             }
+            tx.execute("DELETE FROM node_meta WHERE node_id=?1", [&id])?;
+            tx.execute("DELETE FROM enrollments WHERE node_id=?1", [&id])?;
+            tx.commit()?;
             println!("Node removed and credential revoked: {id}");
         }
         Command::Agent { config, once } => agent::run(&config, once).await?,
